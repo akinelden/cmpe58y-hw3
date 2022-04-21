@@ -41,12 +41,6 @@ class Network:
         n_x = d_error.shape[0]
         # keep layer errors
         layer_errors = [0 for i in range(len(self.W))]
-
-        # TODO: take them
-        # # output layer error is y*p + (1-y)*(1-p)
-        # # and its derivative is y - p
-        # layer_errors[-1] = dsigmoid_from_H(Hs[-1]) * (targets - predictions)
-        
         layer_errors[-1] = d_error
 
         self.gradW[-1] = (Hs[-2].T @ layer_errors[-1]) / n_x
@@ -59,7 +53,8 @@ class Network:
 
     def update(self, lr: float):
         for i in range(len(self.W)):
-            # since we are trying to maximize the reward not decrease it, we add gradient
+            # since we are trying to maximize sum(y*logp*dr) not to minimize it, 
+            # we move in positive gradient direction by addition
             self.W[i] = self.W[i] + lr * self.gradW[i]
             self.b[i] = self.b[i] + lr * self.gradb[i]
 
@@ -101,10 +96,9 @@ class PolicyGradient:
     def train(self, n_rollouts, rollout_size=50, log = True):
         rollout = 0
         episode = 0
-        iter = 0
         while rollout < n_rollouts:
             rollout += 1
-            rollout_Hs = [[] for i in range(self.network.n_layer+1)]
+            rollout_Hs = [[] for i in range(self.network.n_layer+1)] # we keep a list for each layer output including input
             rollout_preds = []
             rollout_targets = []
             rollout_rewards = []
@@ -116,18 +110,17 @@ class PolicyGradient:
                 done = False
                 observation = self.env.reset()
                 
-                ep_rewards = []
+                ep_rewards = [] # episode rewards
 
                 while not done:
                     # for each step in episode
-                    iter += 1
                     # first forward pass using current observation
                     p, currentHs = self.network.forward(np.array(observation).reshape(1,-1))
                     # then select action
                     action = 1 if np.random.uniform() < p else 0
-                    y = action
+                    y = action # we accept target is equal to action
                     # perform action and observe new state
-                    observation, reward, done, _info = self.env.step(action)
+                    observation, reward, done, _ = self.env.step(action)
                     score += reward
                     # record results
                     for rH, cH in zip(rollout_Hs, currentHs): rH.append(cH)
@@ -140,12 +133,19 @@ class PolicyGradient:
                         self.scores.append(score)
                         if log: print(f"Episode {episode} : {score}")
                     
-            # When the rollout ends, calculate baseline, discounted rewards, gradient and update network
+            # When the rollout ends, calculate baseline and discounted rewards
             discounted_baseline_rewards = self.discount_and_baseline_rewards(rollout_rewards)
+            # reshape rewards, predictions and targets to prepare matrix operations
             discounted_baseline_rewards = np.concatenate(discounted_baseline_rewards).reshape(-1,1)
             rollout_preds = np.array(rollout_preds).reshape(-1,1)
             rollout_targets = np.array(rollout_targets).reshape(-1,1)
-            d_error = dsigmoid_from_H(rollout_preds) * (rollout_targets - rollout_preds) * discounted_baseline_rewards
+            # gradient of logpi = pred_layer_error @ last_hidden_layer_output
+            # pred_layer_error = [y * (1-p) - (1-y) * p] and since y is 0 or 1, it becomes
+            # pred_layer_error = y - p
+            # we multiply it last_hidden_layer_output inside backward function 
+            # but we multiply it with discounted_baseline_rewards here
+            d_error = (rollout_targets - rollout_preds) * discounted_baseline_rewards
+            # backpropagate and update the weights
             self.network.backward(d_error, [np.array(Hs).reshape(len(Hs),-1) for Hs in rollout_Hs])
             self.network.update(self.learning_rate)
 
@@ -166,9 +166,9 @@ class PolicyGradient:
         observation = self.env.reset()
         while episode < n_episode:
             self.env.render()
-            output = self.training_network.forward(observation)
-            action = np.argmax(output) if random.random() > self.epsilon else self.env.action_space.sample()
-            observation, reward, done, _info = self.env.step(action)
+            p, _ = self.network.forward(np.array(observation).reshape(1,-1))
+            action = 1 if np.random.uniform() < p else 0
+            observation, reward, done, _ = self.env.step(action)
             score += reward
             if done:
                 episode+=1
